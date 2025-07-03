@@ -1,55 +1,59 @@
-// app/api/chat/route.ts
-
 import { NextRequest, NextResponse } from "next/server";
 
-const API_KEY = process.env.GEMINI_API_KEY!;
-const MODEL = "gemini-2.5-flash";
+// Define the shape of the incoming request body
+type ChatHistoryEntry = {
+  role: "user" | "bot";
+  text: string;
+};
 
-type Message = { role: "user" | "bot"; text: string; };
+type ChatRequest = {
+  message: string;
+  history?: ChatHistoryEntry[];
+};
+
+// Define the shape of the chat model input/output if needed
+type GeminiMessage = {
+  role: string;
+  parts: string;
+};
 
 export async function POST(req: NextRequest) {
   try {
-    const { message, history = [] }: { message: string; history?: Message[] } =
-      await req.json();
+    const data: ChatRequest = await req.json();
+    const { message, history = [] } = data;
 
-    // Build conversation for Gemini
-    const contents = [
-      ...history.map((m) => ({
-        role: m.role === "bot" ? "model" : "user",
-        parts: [{ text: m.text }],
-      })),
-      { role: "user", parts: [{ text: message }] },
-    ];
-
-    const resp = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${API_KEY}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ contents }),
-      }
-    );
-
-    if (!resp.ok) {
-      const err = await resp.text();
-      console.error("Gemini error:", err);
-      return NextResponse.json(
-        { error: "Gemini API failed", details: err },
-        { status: resp.status }
-      );
+    if (!message) {
+      return NextResponse.json({ error: "Message is required" }, { status: 400 });
     }
 
-    const data = await resp.json();
-    const botText =
-      data.candidates?.[0]?.content?.parts?.[0]?.text ||
-      "No response from Gemini.";
+    // Prepare conversation history for Gemini format
+    const formattedHistory: GeminiMessage[] = history.map(entry => ({
+      role: entry.role === "user" ? "user" : "model",
+      parts: entry.text,
+    }));
 
-    return NextResponse.json({ response: botText });
-  } catch (err: any) {
-    console.error("Server error:", err);
-    return NextResponse.json(
-      { error: "Server error", details: err.message },
-      { status: 500 }
-    );
+    formattedHistory.push({ role: "user", parts: message });
+
+    // Call Gemini API
+    const response = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=" + process.env.GEMINI_API_KEY, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: formattedHistory,
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      return NextResponse.json({ error }, { status: response.status });
+    }
+
+    const responseData = await response.json();
+    const botReply = responseData.candidates?.[0]?.content?.parts?.[0]?.text ?? "Sorry, I couldn't generate a response.";
+
+    return NextResponse.json({ response: botReply }, { status: 200 });
+  } catch (error) {
+    console.error("Chat route error:", error);
+    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }
